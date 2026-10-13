@@ -10,6 +10,7 @@ const LikeButton = ({ songname, picture, artist }) => {
   const { songId } = useParams();
   const [likedSong, setLikedSong] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetch(`/songinfo/${songId}`)
@@ -26,7 +27,11 @@ const LikeButton = ({ songname, picture, artist }) => {
   const addToLikeList = () => {
     if (!user) {
       return setSignedIn(true);
+    } else if (saving) {
+      //Ignore clicks until the previous like/unlike has finished
+      return;
     } else {
+      setSaving(true);
       setLikedSong((prev) => !prev);
       setSignedIn(false);
       fetch("/likesong", {
@@ -45,15 +50,24 @@ const LikeButton = ({ songname, picture, artist }) => {
         .then((response) => {
           return response.json();
         })
-        .then((data) => setLikedSong(data.data))
+        .then((data) => {
+          if (typeof data.data === "boolean") {
+            setLikedSong(data.data);
+          } else {
+            //Request failed, undo the optimistic toggle
+            setLikedSong((prev) => !prev);
+          }
+        })
         .catch((error) => {
+          setLikedSong((prev) => !prev);
           window.alert(error, "Something bad happened");
-        });
+        })
+        .finally(() => setSaving(false));
     }
   };
 
   return (
-    <AddToLikedButton onClick={() => addToLikeList()}>
+    <AddToLikedButton onClick={() => addToLikeList()} disabled={saving}>
       <ToastNotification
         message="Please log-in to like the song"
         show={signedIn}

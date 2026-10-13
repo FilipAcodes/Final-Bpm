@@ -13,70 +13,69 @@ const likeSong = async (req, res) => {
   const { email, songid, songname, picture, artist } = req.body;
 
   if (!email || !songid || !songname || !picture || !artist) {
-    res.status(404).json({ status: 404, message: "Missing Data..." });
+    return res.status(404).json({ status: 404, message: "Missing Data..." });
   }
 
+  const songId = Number(songid);
   const client = new MongoClient(MONGO_URI, options);
-  await client.connect();
-  const db = client.db("finalbpm");
-  const likedSongsCollection = db.collection("likesongs");
-  const existingLikedSongs = await likedSongsCollection.findOne({ _id: email });
 
-  if (!existingLikedSongs) {
-    await likedSongsCollection.insertOne({
-      _id: email,
-      likedSongs: [
-        {
-          songid: Number(songid),
-          songname: songname,
-          picture: picture,
-          artist: artist,
-        },
-      ],
-    });
-    client.close();
+  try {
+    await client.connect();
+    const db = client.db("finalbpm");
+    const likedSongsCollection = db.collection("likesongs");
 
-    return res
-      .status(200)
-      .json({ status: 200, message: "Song added to liked songs!" });
-  } else {
-    const likedSongs = existingLikedSongs.likedSongs;
-    const index = likedSongs.findIndex(
-      (song) => song.songid === Number(songid)
-    );
+    //Each step is a single atomic update whose filter checks the song's current state,
+    //so two requests at the same time (e.g. a double click) can't both add the song.
+    //If another request liked the song between our two steps, the upsert fails with a
+    //duplicate key error, and we loop back to unlike it so the toggle still applies.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const removed = await likedSongsCollection.updateOne(
+        { _id: email, "likedSongs.songid": songId },
+        { $pull: { likedSongs: { songid: songId } } }
+      );
 
-    if (index === -1) {
-      await likedSongsCollection.updateOne(
-        { _id: email },
-        {
-          $push: {
-            likedSongs: {
-              songid: Number(songid),
-              songname: songname,
-              picture: picture,
-              artist: artist,
+      if (removed.modifiedCount === 1) {
+        return res.status(200).json({
+          status: 200,
+          message: "Song removed from liked songs!",
+          data: false,
+        });
+      }
+
+      try {
+        await likedSongsCollection.updateOne(
+          { _id: email, "likedSongs.songid": { $ne: songId } },
+          {
+            $push: {
+              likedSongs: {
+                songid: songId,
+                songname: songname,
+                picture: picture,
+                artist: artist,
+              },
             },
           },
+          { upsert: true }
+        );
+        return res.status(200).json({
+          status: 200,
+          message: "Song added to liked songs!",
+          data: true,
+        });
+      } catch (err) {
+        if (err.code !== 11000) {
+          throw err;
         }
-      );
-      client.close();
-      return res.status(200).json({
-        status: 200,
-        message: "Song added to liked songs!",
-        data: true,
-      });
-    } else {
-      await likedSongsCollection.updateOne(
-        { _id: email },
-        { $pull: { likedSongs: { songid: Number(songid) } } }
-      );
-      client.close();
-      return res.status(200).json({
-        status: 200,
-        message: "Song removed from liked songs!",
-        data: false,
-      });
+      }
     }
+
+    return res
+      .status(409)
+      .json({ status: 409, message: "Song is being updated, try again" });
+  } catch (err) {
+    return res.status(500).json({ status: 500, message: err.message });
+  } finally {
+    client.close();
   }
 };
 
